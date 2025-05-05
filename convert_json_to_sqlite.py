@@ -1,0 +1,216 @@
+import glob
+import json
+import sqlite3
+from pathlib import Path
+
+def create_tables(conn):
+    cursor = conn.cursor()
+    cursor.executescript("""
+    CREATE TABLE IF NOT EXISTS creators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE,
+        image TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS models (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        description TEXT,
+        allowNoCredit BOOLEAN,
+        allowDerivatives BOOLEAN,
+        allowDifferentLicense BOOLEAN,
+        type TEXT,
+        minor BOOLEAN,
+        sfwOnly BOOLEAN,
+        poi BOOLEAN,
+        nsfw BOOLEAN,
+        nsfwLevel INTEGER,
+        availability TEXT,
+        cosmetic TEXT,
+        supportsGeneration BOOLEAN,
+        creator_id INTEGER,
+        FOREIGN KEY (creator_id) REFERENCES creators(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS modelVersions (
+        id INTEGER PRIMARY KEY,
+        model_id INTEGER,
+        index_in_model INTEGER,
+        name TEXT,
+        baseModel TEXT,
+        baseModelType TEXT,
+        publishedAt TEXT,
+        availability TEXT,
+        nsfwLevel INTEGER,
+        description TEXT,
+        supportsGeneration BOOLEAN,
+        downloadUrl TEXT,
+        FOREIGN KEY (model_id) REFERENCES models(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS files (
+        id INTEGER PRIMARY KEY,
+        modelVersion_id INTEGER,
+        sizeKB REAL,
+        name TEXT,
+        type TEXT,
+        pickleScanResult TEXT,
+        pickleScanMessage TEXT,
+        virusScanResult TEXT,
+        virusScanMessage TEXT,
+        scannedAt TEXT,
+        metadata_format TEXT,
+        downloadUrl TEXT,
+        primaryFile BOOLEAN,
+        FOREIGN KEY (modelVersion_id) REFERENCES modelVersions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        model_id INTEGER,
+        tag TEXT,
+        UNIQUE(model_id, tag),
+        FOREIGN KEY (model_id) REFERENCES models(id)
+    );
+                            
+    -- For fast lookup/filtering by name and type
+    CREATE INDEX IF NOT EXISTS idx_models_name ON models(name);
+    CREATE INDEX IF NOT EXISTS idx_models_type ON models(type);
+    CREATE INDEX IF NOT EXISTS idx_models_nsfw ON models(nsfw);
+    CREATE INDEX IF NOT EXISTS idx_models_sfwOnly ON models(sfwOnly);
+
+    -- Foreign key from models → creators
+    CREATE INDEX IF NOT EXISTS idx_models_creator_id ON models(creator_id);
+
+    -- For fast filtering or joining on model version fields
+    CREATE INDEX IF NOT EXISTS idx_modelversions_model_id ON modelversions(model_id);
+    CREATE INDEX IF NOT EXISTS idx_modelversions_nsfwLevel ON modelversions(nsfwLevel);
+
+    -- For fast access to files by model version
+    CREATE INDEX IF NOT EXISTS idx_files_modelversion_id ON files(modelVersion_id);
+
+    -- For tags lookup by model ID
+    CREATE INDEX IF NOT EXISTS idx_tags_model_id ON tags(model_id);
+
+    -- Optional: Indexes on creator fields if filtering/searching
+    CREATE INDEX IF NOT EXISTS idx_creators_username ON creators(username);
+
+    """)
+    conn.commit()
+
+def get_or_create_creator(conn, username, image):
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO creators (username, image) VALUES (?, ?)", (username, image))
+    conn.commit()
+    cursor.execute("SELECT id FROM creators WHERE username = ?", (username,))
+    return cursor.fetchone()[0]
+
+def insert_model(conn, item, creator_id):
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR IGNORE INTO models (id, name, description, allowNoCredit, allowDerivatives , allowDifferentLicense, type, minor, sfwOnly, poi, nsfw, nsfwLevel, availability, cosmetic, supportsGeneration, creator_id) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        item["id"],
+        item.get("name"),
+        item.get("description"),
+        item.get("allowNoCredit"),
+        item.get("allowDerivatives"),
+
+        item.get("allowDifferentLicense"),
+        item.get("type"),
+        item.get("minor"),
+        item.get("sfwOnly"),  
+        item.get("poi"),
+        
+        item.get("nsfw"),
+        item.get("nsfwLevel"),
+        item.get("availability"),
+        item.get("cosmetic"),
+        item.get("supportsGeneration"),
+
+        creator_id
+    ))
+    conn.commit()
+
+def insert_tags(conn, model_id, tags):
+    cursor = conn.cursor()
+    for tag in tags:
+        cursor.execute("INSERT OR IGNORE INTO tags (model_id, tag) VALUES (?, ?)", (model_id, tag))
+    conn.commit()
+
+def insert_model_version(conn, version, model_id):
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR IGNORE INTO modelVersions (
+            id, model_id, index_in_model, name, baseModel, baseModelType,
+            publishedAt, availability, nsfwLevel, description, supportsGeneration, downloadUrl
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        version["id"], model_id, version["index"], version["name"],
+        version["baseModel"], version.get("baseModelType"),
+        version["publishedAt"], version["availability"], version["nsfwLevel"],
+        version.get("description"), version["supportsGeneration"], version.get("downloadUrl")
+    ))
+    conn.commit()
+    return version["id"]
+
+def insert_files(conn, files, version_id):
+    cursor = conn.cursor()
+    for f in files:
+        cursor.execute("""
+            INSERT OR IGNORE INTO files (
+                id, modelVersion_id, sizeKB, name, type,
+                pickleScanResult, pickleScanMessage, virusScanResult,
+                virusScanMessage, scannedAt, metadata_format, downloadUrl, primaryFile
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            f["id"], version_id, f["sizeKB"], f["name"], f["type"],
+            f["pickleScanResult"], f.get("pickleScanMessage"), f["virusScanResult"],
+            f.get("virusScanMessage"), f["scannedAt"],
+            f["metadata"].get("format") if f.get("metadata") else None,
+            f["downloadUrl"], f.get("primary")
+        ))
+    conn.commit()
+
+def process_json(conn, json_path):
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+
+    for item in data["items"]:
+        creator_info = item.get("creator")
+        creator_id = None
+        if creator_info is not None and creator_info["username"] is not None:
+            creator_id = get_or_create_creator(conn, creator_info["username"], creator_info["image"])
+        insert_model(conn, item, creator_id)
+        insert_tags(conn, item["id"], item["tags"])
+
+        for version in item["modelVersions"]:
+            version_id = insert_model_version(conn, version, item["id"])
+            insert_files(conn, version["files"], version_id)
+
+
+if __name__ == "__main__":
+    import sys
+    db_path = "models.db"
+    
+    conn = sqlite3.connect(db_path)
+    create_tables(conn)
+
+    if len(sys.argv) == 2:
+        process_json(conn, sys.argv[1])    
+
+    else:
+        for filepath in glob.glob("*.json"):
+            print(f"Processing {filepath}...")
+            try:
+                process_json(conn, filepath)
+            except json.JSONDecodeError as e:
+                print(f"❌ Failed to parse {filepath}: {e}")
+            except Exception as e:
+                print(f"❌ Error processing {filepath}: {e}")
+
+    conn.close()
+
+    print(f"Data successfully inserted into '{db_path}'.")
