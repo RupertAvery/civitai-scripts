@@ -29,6 +29,7 @@ def create_tables(conn):
         cosmetic TEXT,
         supportsGeneration BOOLEAN,
         creator_id INTEGER,
+        downloadCount INTEGER,
         FOREIGN KEY (creator_id) REFERENCES creators(id)
     );
 
@@ -45,6 +46,7 @@ def create_tables(conn):
         description TEXT,
         supportsGeneration BOOLEAN,
         downloadUrl TEXT,
+        downloadCount INTEGER,
         FOREIGN KEY (model_id) REFERENCES models(id)
     );
 
@@ -125,10 +127,14 @@ def get_or_create_creator(conn, username, image):
     return cursor.fetchone()[0]
 
 def insert_model(conn, item, creator_id):
+    stats = item.get("stats")
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT OR IGNORE INTO models (id, name, description, allowNoCredit, allowDerivatives , allowDifferentLicense, type, minor, sfwOnly, poi, nsfw, nsfwLevel, availability, cosmetic, supportsGeneration, creator_id) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO models (id, name, description, allowNoCredit, allowDerivatives, 
+                   allowDifferentLicense, type, minor, sfwOnly, poi, 
+                   nsfw, nsfwLevel, availability, cosmetic, supportsGeneration, 
+                   creator_id, downloadCount) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         item["id"],
         item.get("name"),
@@ -148,7 +154,8 @@ def insert_model(conn, item, creator_id):
         item.get("cosmetic"),
         item.get("supportsGeneration"),
 
-        creator_id
+        creator_id,
+        stats.get("downloadCount"),
     ))
     conn.commit()
 
@@ -159,17 +166,30 @@ def insert_tags(conn, model_id, tags):
     conn.commit()
 
 def insert_model_version(conn, version, model_id):
+    stats = version.get("stats")
     cursor = conn.cursor()
     cursor.execute("""
         INSERT OR IGNORE INTO modelVersions (
             id, model_id, index_in_model, name, baseModel, baseModelType,
-            publishedAt, availability, nsfwLevel, description, supportsGeneration, downloadUrl
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            publishedAt, availability, nsfwLevel, description, supportsGeneration, 
+            downloadUrl, downloadCount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        version["id"], model_id, version["index"], version["name"],
-        version["baseModel"], version.get("baseModelType"),
-        version["publishedAt"], version["availability"], version["nsfwLevel"],
-        version.get("description"), version["supportsGeneration"], version.get("downloadUrl")
+        version["id"], 
+        model_id, 
+        version["index"], 
+        version["name"],
+        version["baseModel"], 
+        version.get("baseModelType"),
+
+        version["publishedAt"], 
+        version["availability"], 
+        version["nsfwLevel"],
+        version.get("description"), 
+        version["supportsGeneration"], 
+
+        version.get("downloadUrl"),
+        stats.get("downloadCount"),
     ))
     conn.commit()
     return version["id"]
