@@ -50,7 +50,6 @@ def create_tables(conn):
 
     CREATE TABLE IF NOT EXISTS files (
         id INTEGER PRIMARY KEY,
-        modelVersion_id INTEGER,
         sizeKB REAL,
         name TEXT,
         type TEXT,
@@ -59,10 +58,17 @@ def create_tables(conn):
         virusScanResult TEXT,
         virusScanMessage TEXT,
         scannedAt TEXT,
-        metadata_format TEXT,
+        format TEXT,
+        modelVersion_id INTEGER,
+        sha256 TEXT,
+        autov1 TEXT,
+        autov2 TEXT,
+        autov3 TEXT,
+        crc32 TEXT,
+        blake3 TEXT,
         downloadUrl TEXT,
         primaryFile BOOLEAN,
-        FOREIGN KEY (modelVersion_id) REFERENCES modelVersions(id)
+        FOREIGN KEY (modelVersion_id) REFERENCES modelversions(id)
     );
 
     CREATE TABLE IF NOT EXISTS tags (
@@ -72,6 +78,17 @@ def create_tables(conn):
         UNIQUE(model_id, tag),
         FOREIGN KEY (model_id) REFERENCES models(id)
     );
+                            
+    CREATE TABLE IF NOT EXISTS images (
+        id INTEGER PRIMARY KEY,
+        url TEXT,
+        nsfwLevel INTEGER,
+        width INTEGER,
+        height INTEGER,
+        hash TEXT,
+        modelVersion_id INTEGER,
+        FOREIGN KEY (modelVersion_id) REFERENCES modelversions(id)
+    );                         
                             
     -- For fast lookup/filtering by name and type
     CREATE INDEX IF NOT EXISTS idx_models_name ON models(name);
@@ -94,6 +111,8 @@ def create_tables(conn):
 
     -- Optional: Indexes on creator fields if filtering/searching
     CREATE INDEX IF NOT EXISTS idx_creators_username ON creators(username);
+                         
+    CREATE INDEX IF NOT EXISTS idx_images_modelversion_id ON images(modelVersion_id);
 
     """)
     conn.commit()
@@ -155,23 +174,59 @@ def insert_model_version(conn, version, model_id):
     conn.commit()
     return version["id"]
 
-def insert_files(conn, files, version_id):
+def insert_files(conn, files, modelVersion_id):
     cursor = conn.cursor()
-    for f in files:
+    for file in files:
+        hashes = file.get("hashes", {})
+        metadata = file.get("metadata", {})
         cursor.execute("""
             INSERT OR IGNORE INTO files (
-                id, modelVersion_id, sizeKB, name, type,
-                pickleScanResult, pickleScanMessage, virusScanResult,
-                virusScanMessage, scannedAt, metadata_format, downloadUrl, primaryFile
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, sizeKB, name, type, pickleScanResult, pickleScanMessage,
+                virusScanResult, virusScanMessage, scannedAt,
+                format, modelVersion_id,
+                sha256, autov1, autov2, autov3, crc32, blake3,
+                downloadUrl, primaryFile
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            f["id"], version_id, f["sizeKB"], f["name"], f["type"],
-            f["pickleScanResult"], f.get("pickleScanMessage"), f["virusScanResult"],
-            f.get("virusScanMessage"), f["scannedAt"],
-            f["metadata"].get("format") if f.get("metadata") else None,
-            f["downloadUrl"], f.get("primary")
+            file["id"],
+            file.get("sizeKB"),
+            file.get("name"),
+            file.get("type"),
+            file.get("pickleScanResult"),
+            file.get("pickleScanMessage"),
+            file.get("virusScanResult"),
+            file.get("virusScanMessage"),
+            file.get("scannedAt"),
+            metadata.get("format"),
+            modelVersion_id,
+            hashes.get("SHA256"),
+            hashes.get("AutoV1"),
+            hashes.get("AutoV2"),
+            hashes.get("AutoV3"),
+            hashes.get("CRC32"),
+            hashes.get("BLAKE3"),
+            file.get("downloadUrl"),
+            file.get("primary")
         ))
     conn.commit()
+
+def insert_images(conn, images, modelVersion_id):
+    cursor = conn.cursor()
+    for img in images:
+        cursor.execute("""
+            INSERT OR IGNORE INTO images (
+                id, url, nsfwLevel, width, height, hash, modelVersion_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            img["id"],
+            img.get("url"),
+            img.get("nsfwLevel"),
+            img.get("width"),
+            img.get("height"),
+            img.get("hash"),
+            modelVersion_id
+        ))
+    conn.commit()    
 
 def process_json(conn, json_path):
     with open(json_path, "r", encoding="utf-8") as f:
@@ -188,6 +243,10 @@ def process_json(conn, json_path):
 
         for version in item["modelVersions"]:
             version_id = insert_model_version(conn, version, item["id"])
+
+            if "images" in version:
+                insert_images(conn, version["images"], version["id"])
+
             insert_files(conn, version["files"], version_id)
 
 
