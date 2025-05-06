@@ -3,6 +3,15 @@ import json
 import sqlite3
 from pathlib import Path
 
+def ensure_column_exists(conn, table, column, col_type="TEXT"):
+    cursor = conn.cursor()
+    cursor.execute(f"PRAGMA table_info({table})")
+    columns = [row[1] for row in cursor.fetchall()]
+    if column not in columns:
+        print(f"⚠️ Adding missing column '{column}' to '{table}'...")
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        conn.commit()
+
 def create_tables(conn):
     cursor = conn.cursor()
     cursor.executescript("""
@@ -125,7 +134,7 @@ def get_or_create_creator(conn, username, image):
         VALUES (?, ?) 
         ON CONFLICT(username) DO UPDATE SET image=excluded.image
     """, (username, image))
-    conn.commit()
+    # conn.commit()
     cursor.execute("SELECT id FROM creators WHERE username = ?", (username,))
     return cursor.fetchone()[0]
 
@@ -174,7 +183,7 @@ def insert_model(conn, item, creator_id):
         creator_id,
         stats.get("downloadCount"),
     ))
-    conn.commit()
+    # conn.commit()
 
 def insert_tags(conn, model_id, tags):
     cursor = conn.cursor()
@@ -184,7 +193,7 @@ def insert_tags(conn, model_id, tags):
             VALUES (?, ?) 
             ON CONFLICT(model_id, tag) DO NOTHING
         """, (model_id, tag))
-    conn.commit()
+    # conn.commit()
 
 def insert_model_version(conn, version, model_id):
     stats = version.get("stats")
@@ -223,7 +232,7 @@ def insert_model_version(conn, version, model_id):
         version.get("downloadUrl"),
         stats.get("downloadCount"),
     ))
-    conn.commit()
+    # conn.commit()
     return version["id"]
 
 def insert_files(conn, files, modelVersion_id):
@@ -279,7 +288,7 @@ def insert_files(conn, files, modelVersion_id):
             file.get("downloadUrl"),
             file.get("primary")
         ))
-    conn.commit()
+    # conn.commit()
 
 def insert_images(conn, images, modelVersion_id):
     cursor = conn.cursor()
@@ -304,28 +313,34 @@ def insert_images(conn, images, modelVersion_id):
             img.get("hash"),
             modelVersion_id
         ))
-    conn.commit()
+    # conn.commit()
 
 def process_json(conn, json_path):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    
+    conn.execute("BEGIN")
+    
+    try:
+        for item in data["items"]:
+            creator_info = item.get("creator")
+            creator_id = None
+            if creator_info is not None and creator_info["username"] is not None:
+                creator_id = get_or_create_creator(conn, creator_info["username"], creator_info["image"])
+            insert_model(conn, item, creator_id)
+            insert_tags(conn, item["id"], item["tags"])
 
-    for item in data["items"]:
-        creator_info = item.get("creator")
-        creator_id = None
-        if creator_info is not None and creator_info["username"] is not None:
-            creator_id = get_or_create_creator(conn, creator_info["username"], creator_info["image"])
-        insert_model(conn, item, creator_id)
-        insert_tags(conn, item["id"], item["tags"])
+            for version in item["modelVersions"]:
+                version_id = insert_model_version(conn, version, item["id"])
 
-        for version in item["modelVersions"]:
-            version_id = insert_model_version(conn, version, item["id"])
+                if "images" in version:
+                    insert_images(conn, version["images"], version["id"])
 
-            if "images" in version:
-                insert_images(conn, version["images"], version["id"])
-
-            insert_files(conn, version["files"], version_id)
-
+                insert_files(conn, version["files"], version_id)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 if __name__ == "__main__":
     import sys
