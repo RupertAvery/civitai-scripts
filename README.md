@@ -8,8 +8,10 @@ Here are a bunch of scripts that might be useful to Civitai users:
 * requests package
 
 ```
-pip install requests
+pip install requests pandas tqdm
 ```
+
+# pandas and tqdm dependencies required for the downloader
 
 ## Download Metadata for your models
 
